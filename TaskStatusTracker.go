@@ -5,10 +5,17 @@ import (
 	"context"
 	_ "flag"
 	"fmt"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	//"reflect"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"time"
+
 	"google.golang.org/grpc"
 	_ "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -17,24 +24,21 @@ import (
 	v1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-	"log"
-	"net"
-	"os"
-	"path/filepath"
-	"time"
 
 	pb "TaskStatusTracker/TaskStatusTrackerProto"
 	tb "TaskStatusTracker/schedulerProto"
 )
 
-//const (
+// const (
+//
 //	port = "192.168.1.109:50051"
-//)
+//
+// )
 type server struct {
 	pb.UnimplementedTaskStatusTrackerServer
 }
 
-//TaskListChan := make(chan *list.List, 10000)
+// TaskListChan := make(chan *list.List, 10000)
 var TaskListChan chan *list.List
 
 var port string
@@ -78,6 +82,10 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
+
+	// 1.24.17版本的k8s集群，需要手动设置Host
+	config.Host = "https://192.168.1.240:6443"
+
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -121,7 +129,7 @@ func main() {
 	// 初始化接收端Server
 	go grpcServer(&waiter) //启动Server Go routine
 	// 查询pod状态，并启动发送端client协程
-    for i :=0; i < 1000; i++ {
+	for i := 0; i < 1000; i++ {
 		waiter.Add(1)
 		go func() {
 			//log.Println("checking out pod's status.")
@@ -134,13 +142,13 @@ func main() {
 				select {
 				case newWorkflowTaskList = <-TaskListChan:
 					//log.Println("Received channel's data.")
-				case <- timeout:
+				case <-timeout:
 					//log.Println("Waiting timeout.")
 				}
 
-				updateTaskListRegisterMap(TaskListRegisterMap,newWorkflowTaskList)
+				updateTaskListRegisterMap(TaskListRegisterMap, newWorkflowTaskList)
 
-				getPodsStatus(TaskListRegisterMap, podLister,clientset)
+				getPodsStatus(TaskListRegisterMap, podLister, clientset)
 			}
 		}()
 	}
@@ -157,27 +165,28 @@ type Task struct {
 	podName     string
 	state       string
 }
+
 func recoverEmptyMapPanic() {
-	if r := recover(); r!= nil {
+	if r := recover(); r != nil {
 		log.Println("recovered from ", r)
 	}
 }
+
 // 接收gRPC传来的TaskList，更新旧的键值对或建立新的键值对
 
-func updateTaskListRegisterMap(TaskListRegisterMap map[string]*list.List,newWorkflowTaskList *list.List)  {
-
+func updateTaskListRegisterMap(TaskListRegisterMap map[string]*list.List, newWorkflowTaskList *list.List) {
 
 	//var TaskListResgisterMap map[string]*list.List
 	//defer recoverEmptyMapPanic()
 	//log.Printf("newWorkflowTaskList's length is:%d.\n",newWorkflowTaskList.Len())
-	if newWorkflowTaskList.Len() ==0 {
+	if newWorkflowTaskList.Len() == 0 {
 		//log.Println("This go routine newWorkflowTaskList is null.")
-        return
+		return
 	}
 	workflowid := newWorkflowTaskList.Front().Value.(Task).workflowid
 	//log.Printf("Recieved workflowid is:%s.\n",workflowid)
 	//log.Printf("workflowid:%s.\n",workflowid)
-    //var TaskListRegisterMap map[string]*list.List
+	//var TaskListRegisterMap map[string]*list.List
 	if mapItem, ok := TaskListRegisterMap[workflowid]; ok {
 		//registedTaskList := TaskListRegisterMap[workflowid]
 		mapItem.PushBackList(newWorkflowTaskList)
@@ -206,105 +215,106 @@ func updateTaskListRegisterMap(TaskListRegisterMap map[string]*list.List,newWork
 	//log.Printf("TaskListRegisterMap's length is:%d.\n", len(TaskListRegisterMap))
 }
 func recoverDeletePodFail() {
-	if r := recover(); r!= nil {
+	if r := recover(); r != nil {
 		log.Println("recovered from ", r)
 	}
 }
+
 // 遍历Map，双重遍历TaskList，逐个Task查询其状态
-func getPodsStatus(TaskListRegisterMap map[string]*list.List, podLister v1.PodLister,clientService *kubernetes.Clientset) {
+func getPodsStatus(TaskListRegisterMap map[string]*list.List, podLister v1.PodLister, clientService *kubernetes.Clientset) {
 	defer recoverDeletePodFail()
 	//log.Println("Enter getPodsStatus function.********************")
 	for workflowid, registedTaskList := range TaskListRegisterMap {
 
-			returnedTaskList := list.New()
-		    //log.Printf("workflowid:%s\n",workflowid)
-			//var taskElement *list.Element
-			for taskIndex := registedTaskList.Front(); taskIndex != nil; taskIndex = taskIndex.Next() {
-				// 访问informer缓存
-				taskid := clusterId +"-"+ taskIndex.Value.(Task).podName
-				//拆分taskId,检测此任务pod是否为调度器又一次发送的执行failed的任务pod
-				//taskNameSplit := strings.Split(taskid,"-")
-				//if taskNameSplit[len(taskNameSplit)-1] == "1" {
-				//	log.Printf("workflowid:%s,taskid:%s\n",workflowid,taskid)
-				//}
-				//log.Printf("workflowid:%s,taskid:%s\n",workflowid,taskid)
-				pod, err := podLister.Pods(workflowid).Get(taskid)
+		returnedTaskList := list.New()
+		//log.Printf("workflowid:%s\n",workflowid)
+		//var taskElement *list.Element
+		for taskIndex := registedTaskList.Front(); taskIndex != nil; taskIndex = taskIndex.Next() {
+			// 访问informer缓存
+			taskid := clusterId + "-" + taskIndex.Value.(Task).podName
+			//拆分taskId,检测此任务pod是否为调度器又一次发送的执行failed的任务pod
+			//taskNameSplit := strings.Split(taskid,"-")
+			//if taskNameSplit[len(taskNameSplit)-1] == "1" {
+			//	log.Printf("workflowid:%s,taskid:%s\n",workflowid,taskid)
+			//}
+			//log.Printf("workflowid:%s,taskid:%s\n",workflowid,taskid)
+			pod, err := podLister.Pods(workflowid).Get(taskid)
+			if err != nil {
+				continue
+				//panic(err)
+			}
+			if pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
+				var temp Task
+				temp = taskIndex.Value.(Task)
+				podState := pod.Status.Phase
+				//fmt.Println("taskPodName: ",taskIndex.Value.(Task).podName, "'s state is: ",podState)
+				temp.state = string(podState)
+				//delete pods with Succeeded state or Failed state
+				trackerSema <- 1
+				err = clientService.CoreV1().Pods(workflowid).Delete(pod.Name, &metav1.DeleteOptions{})
+				<-trackerSema
 				if err != nil {
-                    continue
-					//panic(err)
-				}
-				if pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
-					var temp Task
-					temp = taskIndex.Value.(Task)
-					podState := pod.Status.Phase
-					//fmt.Println("taskPodName: ",taskIndex.Value.(Task).podName, "'s state is: ",podState)
-					temp.state = string(podState)
-					//delete pods with Succeeded state or Failed state
-					trackerSema <- 1
-					err = clientService.CoreV1().Pods(workflowid).Delete(pod.Name, &metav1.DeleteOptions{})
-					<- trackerSema
+					log.Println(err)
+					//由于访问etcd timeout,判断该任务pod是否已经删除成功
+					time.Sleep(10 * time.Second)
+					//podObject, err := clientService.CoreV1().Pods(pod.Namespace).Get(pod.Name,metav1.GetOptions{})
+					log.Println("Obtain from Informer after 10 seconds.")
+					_, err := podLister.Pods(pod.Namespace).Get(pod.Name)
 					if err != nil {
 						log.Println(err)
-						//由于访问etcd timeout,判断该任务pod是否已经删除成功
-						time.Sleep(10 * time.Second)
-						//podObject, err := clientService.CoreV1().Pods(pod.Namespace).Get(pod.Name,metav1.GetOptions{})
-						log.Println("Obtain from Informer after 10 seconds.")
+						//if len(podObject.Name) == 0 {
+						log.Printf("Not find this task pod: %v, and delay 5 seconds.\n", pod.Name)
+						time.Sleep(5 * time.Second)
+						//podOb, err := clientService.CoreV1().Pods(pod.Namespace).Get(pod.Name,metav1.GetOptions{})
 						_, err := podLister.Pods(pod.Namespace).Get(pod.Name)
-						if err != nil {
+						log.Println("Obtain this task pod from Informer again.")
+						if err != nil { //说明etcd不存在此任务pod，已经被删除
 							log.Println(err)
-							//if len(podObject.Name) == 0 {
-							log.Printf("Not find this task pod: %v, and delay 5 seconds.\n", pod.Name)
-							time.Sleep(5 * time.Second)
-							//podOb, err := clientService.CoreV1().Pods(pod.Namespace).Get(pod.Name,metav1.GetOptions{})
-							_, err := podLister.Pods(pod.Namespace).Get(pod.Name)
-							log.Println("Obtain this task pod from Informer again.")
-							if err != nil { //说明etcd不存在此任务pod，已经被删除
-								log.Println(err)
-								log.Printf("Not find this task pod again,the task pod is already deleted.")
-								//returnedTaskList.PushBack(temp)
-								//deletedPodNum++
-								//log.Printf("This is the %dth deleted workflow task pod.\n",deletedPodNum)
-								//registedTaskList.Remove(taskIndex)
-							} else { //说明该任务Pod没有被删除
-								log.Printf("Deleting pod failed. The task pod is also exist: %v.\n", pod.Name)
-								continue
-							}
+							log.Printf("Not find this task pod again,the task pod is already deleted.")
+							//returnedTaskList.PushBack(temp)
+							//deletedPodNum++
+							//log.Printf("This is the %dth deleted workflow task pod.\n",deletedPodNum)
+							//registedTaskList.Remove(taskIndex)
+						} else { //说明该任务Pod没有被删除
+							log.Printf("Deleting pod failed. The task pod is also exist: %v.\n", pod.Name)
+							continue
+						}
 
-						} else {
-							time.Sleep(10 * time.Second)
-							////从etcd重新获取一次
-							//_, err = clientService.CoreV1().Pods(pod.Namespace).Get(pod.Name,metav1.GetOptions{})
-							_, err := podLister.Pods(pod.Namespace).Get(pod.Name)
-							if err != nil { //从Informer读取不到此任务pod，说明被删除
-								log.Println(err)
-								log.Printf("Not find this task pod again after 10 seconds,the task pod is already deleted.")
-							} else { ////从Informer又一次读取此任务pod，说明存在于etcd
-								log.Printf("Deleting pod failed. This task is exist in Informer, %v.\n", pod.Name)
-								//continue
-							}
+					} else {
+						time.Sleep(10 * time.Second)
+						////从etcd重新获取一次
+						//_, err = clientService.CoreV1().Pods(pod.Namespace).Get(pod.Name,metav1.GetOptions{})
+						_, err := podLister.Pods(pod.Namespace).Get(pod.Name)
+						if err != nil { //从Informer读取不到此任务pod，说明被删除
+							log.Println(err)
+							log.Printf("Not find this task pod again after 10 seconds,the task pod is already deleted.")
+						} else { ////从Informer又一次读取此任务pod，说明存在于etcd
+							log.Printf("Deleting pod failed. This task is exist in Informer, %v.\n", pod.Name)
+							//continue
 						}
 					}
-					returnedTaskList.PushBack(temp)
-					log.Printf("Deleted podName: %s, podStatus: %s.\n", pod.Name, pod.Status.Phase)
-					deletedPodNum++
-					log.Printf("This is the %dth deleted workflow task pod.\n",deletedPodNum)
-					registedTaskList.Remove(taskIndex)
 				}
+				returnedTaskList.PushBack(temp)
+				log.Printf("Deleted podName: %s, podStatus: %s.\n", pod.Name, pod.Status.Phase)
+				deletedPodNum++
+				log.Printf("This is the %dth deleted workflow task pod.\n", deletedPodNum)
+				registedTaskList.Remove(taskIndex)
 			}
-			if registedTaskList.Len() == 0 {
-				delete(TaskListRegisterMap, workflowid)
-			}
-			//}else{
-			//	TaskListRegisterMap[workflowid] = registedTaskList
-			//}
-			if returnedTaskList.Len() > 0 {
-				//fmt.Println("returnedTakList",returnedTaskList.Front().Value
-				workflowID := returnedTaskList.Front().Value.(Task).workflowid
-				//log.Println("workflowID:",workflowID)
-				//log.Println("returnedTaskList:",returnedTaskList)
-				grpcClientRequest(workflowID, returnedTaskList)
-				//fmt.Println("grpcClientRequest over")
-			}
+		}
+		if registedTaskList.Len() == 0 {
+			delete(TaskListRegisterMap, workflowid)
+		}
+		//}else{
+		//	TaskListRegisterMap[workflowid] = registedTaskList
+		//}
+		if returnedTaskList.Len() > 0 {
+			//fmt.Println("returnedTakList",returnedTaskList.Front().Value
+			workflowID := returnedTaskList.Front().Value.(Task).workflowid
+			//log.Println("workflowID:",workflowID)
+			//log.Println("returnedTaskList:",returnedTaskList)
+			grpcClientRequest(workflowID, returnedTaskList)
+			//fmt.Println("grpcClientRequest over")
+		}
 		//return TaskListRegisterMap
 	}
 }
@@ -314,7 +324,7 @@ func onAdd(obj interface{}) {
 }
 func onUpdate(old interface{}, current interface{}) {
 
-//	log.Println("updating..............")
+	//	log.Println("updating..............")
 }
 func onDelete(obj interface{}) {
 	//pod := obj.(*corev1.Pod)
@@ -341,10 +351,10 @@ func (s *server) InputTaskState(ctx context.Context, in *pb.TaskStateRequest) (*
 	//for taskIndex := taskList.Front(); taskIndex != nil; taskIndex = taskElement {
 	//	taskElement = taskIndex.Next()
 
-		//log.Printf("Task-workflowID: %v", taskIndex.Value.(Task).workflowid)
-		//log.Printf("Task-IP: %v", taskIndex.Value.(Task).schedulerip)
-		//log.Printf("Recevice Task-ID: %v\n", taskIndex.Value.(Task).podName)
-		//log.Printf("Task-State: %v", taskIndex.Value.(Task).state)
+	//log.Printf("Task-workflowID: %v", taskIndex.Value.(Task).workflowid)
+	//log.Printf("Task-IP: %v", taskIndex.Value.(Task).schedulerip)
+	//log.Printf("Recevice Task-ID: %v\n", taskIndex.Value.(Task).podName)
+	//log.Printf("Task-State: %v", taskIndex.Value.(Task).state)
 	//}
 	return &pb.TaskStateReply{Accept: 1}, nil
 }
@@ -356,7 +366,7 @@ func buildTaskList(tasklist *list.List, in *pb.TaskStateRequest) *list.List {
 		task.schedulerip = in.IP
 		task.taskid = in.NodeState[i].TaskID
 		//var s string = strconv.Itoa(int(in.NodeState[i].TaskPodName))
-		var s string = in.WorkflowID+"-"+in.NodeState[i].TaskPodName
+		var s string = in.WorkflowID + "-" + in.NodeState[i].TaskPodName
 		task.podName = s
 		task.state = "Uncompleted"
 
@@ -385,7 +395,7 @@ func buildTaskList(tasklist *list.List, in *pb.TaskStateRequest) *list.List {
 //}
 
 func recoverGetStateFail() {
-	if r := recover(); r!= nil {
+	if r := recover(); r != nil {
 		log.Println("recovered from ", r)
 	}
 }
