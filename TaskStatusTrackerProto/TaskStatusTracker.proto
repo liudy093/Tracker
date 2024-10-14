@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+option go_package = "TaskStatusTracker/TaskStatusTrackerProto";
+option java_multiple_files = true;
+option java_package = "io.grpc.examples.TaskStatusTracker";
+option java_outer_classname = "TaskStatusTrackerProto";
+
+package TaskStatusTracker;
+
+
+service TaskStatusTracker {
+  rpc InputTaskState(TaskStateRequest) returns (TaskStateReply);
+}
+
+message TaskStateRequest {
+    string workflowID = 1;
+    repeated NodesState nodeState = 2;
+    string IP = 3;
+    message NodesState{
+        int32 taskID = 1;
+        string taskPodName = 2;
+        string taskState = 3;
+    }
+}
+
+message TaskStateReply {
+    uint32 accept = 1;
+}

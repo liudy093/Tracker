@@ -1,0 +1,37 @@
+﻿syntax = "proto3";
+option go_package = "scheduler/schedulerProto";
+option java_multiple_files = true;
+option java_package = "io.grpc.examples.scheduler";
+option java_outer_classname = "schedulerProto";
+
+
+ package scheduler;
+
+ service Scheduler {
+     rpc WorkflowTransfer(WorkflowTransferRequest) returns (WorkflowTransferReply);
+     rpc InputTaskState(TaskStateRequest) returns (TaskStateReply);
+ }
+
+ message WorkflowTransferRequest {
+     string sid = 1;
+     repeated bytes workflow = 2;
+ }
+
+ message WorkflowTransferReply {
+     uint32 accept = 1;
+ }
+ 
+ message TaskStateRequest {
+     string workflowID = 1; 
+     repeated NodesState nodeState = 2;
+     string IP = 3;    
+     message NodesState{
+         uint32 taskID = 1;
+         string taskPodName = 2; 
+         string taskState = 3;
+     }
+ }
+
+ message TaskStateReply {
+     uint32 accept = 1;
+ }
